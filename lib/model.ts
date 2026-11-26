@@ -59,6 +59,13 @@ export interface ModelConstants {
   reach_max_chains: number;
 }
 
+/** The maturity cap: a protocol stops earning age credit after four years running with no token. */
+export const MATURITY_CAP_DAYS = 1460;
+
+/** The reach bonus per chain, capped at six chains: breadth helps, but only up to a point. */
+export const REACH_PER_CHAIN = 0.02;
+export const REACH_MAX_CHAINS = 6;
+
 export const MODEL: ModelConstants = {
   scale_usd: 45_000_000,
   growth_weight: 0.6,
@@ -66,10 +73,10 @@ export const MODEL: ModelConstants = {
   growth_cap: 150,
   maturity_floor: 0.7,
   maturity_range: 0.5,
-  maturity_days: 1460,
+  maturity_days: MATURITY_CAP_DAYS,
   unknown_age_multiplier: 0.85,
-  reach_per_chain: 0.02,
-  reach_max_chains: 6,
+  reach_per_chain: REACH_PER_CHAIN,
+  reach_max_chains: REACH_MAX_CHAINS,
 };
 
 /** The model's version label: the dashboard names it. */
@@ -192,6 +199,10 @@ export function impliedValue(
   model: ModelConstants,
 ): { implied: number; tvlScore: number; growthPct: number; growthMult: number; maturityMult: number; reachMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
+  // A score needs a positive TVL: log10 of zero or a negative number is not a score.
+  if (!Number.isFinite(protocol.tvl_usd) || protocol.tvl_usd <= 0) {
+    throw new SnapshotError(`protocol ${protocol.slug} has TVL ${protocol.tvl_usd}: a score needs a positive TVL`);
+  }
   const tvlScore = Math.log10(Math.max(1, protocol.tvl_usd) / 1_000_000);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));

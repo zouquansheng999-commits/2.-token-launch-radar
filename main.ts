@@ -14,7 +14,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardIssue, buildRadar, dataScript, parseSnapshot, type BoardRow } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -47,6 +47,19 @@ if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
   process.exit(1);
 }
+
+/** The board's own order, checked again before anything is written: ranks exactly 1..N, implied values never rising. */
+function assertBoardOrder(board: BoardRow[]): void {
+  for (let i = 0; i < board.length; i++) {
+    if (board[i]!.rank !== i + 1) throw new Error(`token radar: board row ${i + 1} has rank ${board[i]!.rank}, expected ${i + 1}`);
+    if (i > 0 && board[i]!.implied_value_usd > board[i - 1]!.implied_value_usd) {
+      throw new Error(
+        `token radar: board row ${i + 1} ($${board[i]!.implied_value_usd}) outranks row ${i} ($${board[i - 1]!.implied_value_usd}) on implied value`,
+      );
+    }
+  }
+}
+assertBoardOrder(board);
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
