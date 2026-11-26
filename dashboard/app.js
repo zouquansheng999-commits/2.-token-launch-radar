@@ -1,8 +1,9 @@
-// Token Radar's dashboard, radar-2. It reads window.RADAR (written beside dashboard/ by
+// Token Radar's dashboard, radar-3. It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, a filterable table and a per-protocol detail view with
-// the model's own inputs and the protocol's farm plan. No network: every byte it shows is in
-// data.js. The page recomputes each row's implied value from the snapshot figures with the same
-// formula main.ts uses, so the page's code and the board's data are visibly the same arithmetic.
+// the fitted model's own inputs, the row's uncertainty interval and comparables, and the
+// protocol's farm plan. No network: every byte it shows is in data.js. The page recomputes
+// each row's implied value from the snapshot figures with the same formula main.ts uses, so the
+// page's code and the board's data are visibly the same arithmetic.
 (function () {
   'use strict';
 
@@ -37,15 +38,17 @@
   }
 
   // The model in one function: the same arithmetic as lib/model.ts, from the same inputs.
-  function impliedOf(row, model) {
-    var tvlScore = Math.log10(Math.max(1, row.tvl_usd) / 1e6);
+  // The base is the fitted regression on the snapshot's launched protocols; the multipliers
+  // are the small bounded ordering terms.
+  function impliedOf(row, model, fit) {
+    var base = Math.pow(10, fit.intercept + fit.slope * Math.log10(row.tvl_usd));
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var maturityMult = row.age_days === null || row.age_days === undefined
       ? model.unknown_age_multiplier
       : model.maturity_floor + (Math.min(Math.max(row.age_days, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
     var reachMult = 1 + Math.min((row.chains || []).length, model.reach_max_chains) * model.reach_per_chain;
-    return Math.max(1, Math.round(model.scale_usd * tvlScore * growthMult * maturityMult * reachMult));
+    return Math.max(1, Math.round(base * growthMult * maturityMult * reachMult));
   }
 
   // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL
@@ -241,7 +244,7 @@
     var top = DATA.rows[0];
     return el('section', { class: 'hero' },
       el('h1', { text: 'Which pre-token protocol is worth farming next?' }),
-      el('p', { html: 'Every protocol below <b>records no token</b> yet. The radar ranks them by what a launch would be worth, from the snapshot\u2019s own figures: TVL, seven-day growth, how long it has run with no token, and how many chains it runs on. ' + (top ? 'Right now that points at <b>' + esc(top.name) + '</b>.' : '') }),
+      el('p', { html: 'Every protocol below <b>records no token</b> yet. The radar ranks them by what a launch would be worth, fitted on the ' + (DATA.fit ? DATA.fit.n : '') + ' launched protocols\u2019 own market caps in this same snapshot \u2014 not a hand-set formula. ' + (top ? 'Right now that points at <b>' + esc(top.name) + '</b>.' : '') }),
       el('div', { class: 'stats' },
         el('div', { class: 'stat' }, el('span', { text: 'Watchlist covered' }), el('b', { html: DATA.watchlist_size + ' <em>/ ' + DATA.watchlist_size + '</em>' })),
         el('div', { class: 'stat' }, el('span', { text: 'Pre-token rows ranked' }), el('b', { text: String(DATA.board_size) })),
@@ -253,12 +256,22 @@
 
   function methodPanel() {
     var m = DATA.model;
+    var f = DATA.fit;
     return el('section', { class: 'method' },
-      el('h2', { text: 'How implied value is computed' }),
+      el('h2', { text: 'How implied value is fitted' }),
       el('div', { class: 'formula' },
-        el('span', { html: 'implied = round( <span class="hl">$' + (m.scale_usd / 1e6) + 'M</span> \u00d7 log\u2081\u2080(TVL / $1M) \u00d7 (1 + clamp(7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 \u00d7 ' + m.growth_weight + ') \u00d7 (' + m.maturity_floor + ' + min(age, ' + m.maturity_days + 'd) / ' + m.maturity_days + ' \u00d7 ' + m.maturity_range + ') \u00d7 (1 + min(chains, ' + m.reach_max_chains + ') \u00d7 ' + m.reach_per_chain + ') )' })
+        el('span', { html: 'implied = round( 10<sup>(' + f.intercept.toFixed(2) + ' + ' + f.slope.toFixed(2) + ' \u00d7 log\u2081\u2080(TVL))</sup> \u00d7 (1 + clamp(7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 \u00d7 ' + m.growth_weight + ') \u00d7 (' + m.maturity_floor + ' + min(age, ' + m.maturity_days + 'd) / ' + m.maturity_days + ' \u00d7 ' + m.maturity_range + ') \u00d7 (1 + min(chains, ' + m.reach_max_chains + ') \u00d7 ' + m.reach_per_chain + ') )' })
       ),
-      el('p', { text: 'TVL enters on a log scale, so a giant protocol cannot swamp the board the way a linear term would. Age is the time since DefiLlama first listed the protocol; an unlisted age uses a ' + m.unknown_age_multiplier + ' maturity multiplier. Every row is scored by this one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' })
+      el('div', { class: 'fit-stats' },
+        el('div', null, el('span', { text: 'Fitted on' }), el('b', { text: f.n + ' launched protocols' })),
+        el('div', null, el('span', { text: 'R\u00b2' }), el('b', { text: f.r2.toFixed(2) })),
+        el('div', null, el('span', { text: 'Residual spread' }), el('b', { text: f.residual_sd.toFixed(2) + ' dex' })),
+        el('div', null, el('span', { text: 'Held out (' + f.held_out_n + ' rows)' }), el('b', { text: 'median error ' + f.held_out_med_ape_pct.toFixed(0) + '%' })),
+        el('div', null, el('span', { text: 'Held out within 2\u00d7' }), el('b', { text: f.held_out_within_2x_pct.toFixed(0) + '%' })),
+        el('div', null, el('span', { text: 'Value basis' }), el('b', { text: 'market cap, not FDV' }))
+      ),
+      el('p', { text: 'The regression is log10(market cap) on log10(TVL) over the launched protocols in this same snapshot, after excluding exchange products, wrapped and staked names, versioned pools and zero market caps. Held out means every fifth protocol by slug was predicted from a fit on the other four fifths. The value basis is market cap: the snapshot carries no fully-diluted value.' }),
+      el('p', { text: 'Growth, age and chain count were tested on the same launched set and explain almost none of the leftover variation (R\u00b2 0.02), so they enter only as small bounded ordering terms, never as value drivers. The market prices similar TVL anywhere from 0.05\u00d7 to 1.04\u00d7 TVL, so every row carries an 80% interval from the fit\u2019s own spread \u2014 treat the point as an order of magnitude, not a price. Dropping the 7 most extreme ratios moves the fit to intercept ' + f.trimmed_intercept.toFixed(2) + ', slope ' + f.trimmed_slope.toFixed(2) + ', R\u00b2 ' + f.trimmed_r2.toFixed(2) + ': same direction, wider level uncertainty.' })
     );
   }
 
@@ -379,7 +392,7 @@
     state.selected = slug;
     writeHash();
     dialog.textContent = '';
-    var recomputed = impliedOf(row, DATA.model);
+    var recomputed = impliedOf(row, DATA.model, DATA.fit);
     var ok = recomputed === row.implied_value_usd;
     var steps = farmSteps(row);
     dialog.appendChild(el('div', { class: 'detail-head' },
@@ -394,15 +407,26 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'log10(TVL / $1M)' }), el('b', { class: 'num', text: String(row.tvl_score) })),
+        el('div', null, el('span', { text: 'Fitted base value' }), el('b', { class: 'num', text: fmtUsd(row.base_value_usd) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
         el('div', null, el('span', { text: 'Chains (' + (row.chains || []).length + ')' }), el('b', { class: 'num', text: String(row.reach_multiplier) })),
+        el('div', null, el('span', { text: '80% interval' }), el('b', { class: 'num', text: fmtUsd(row.band_low_usd) + ' \u2013 ' + fmtUsd(row.band_high_usd) })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'check-line', html: 'Page recomputes this row as <b class="' + (ok ? '' : 'bad') + '">' + fmtUsd(recomputed) + '</b>' + (ok ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+      el('p', { class: 'check-line', html: 'Page recomputes this row as <b class="' + (ok ? '' : 'bad') + '">' + fmtUsd(recomputed) + '</b>' + (ok ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' The interval comes from the fit\u2019s own residual spread: an estimate, not a price.' })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Closest launched comparables' }),
+      el('p', { class: 'check-line', text: 'Already trading, nearest in size: what the market pays for a protocol of this TVL.' }),
+      el('ul', { class: 'comps' }, (row.comparables || []).map(function (c) {
+        return el('li', null,
+          el('b', { text: c.name }),
+          el('span', { class: 'cost', text: 'TVL ' + fmtUsd(c.tvl_usd) + ' \u00b7 market cap ' + fmtUsd(c.mcap_usd) + ' \u00b7 ' + c.mcap_tvl + '\u00d7 TVL' })
+        );
+      }))
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),

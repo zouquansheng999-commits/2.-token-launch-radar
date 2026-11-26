@@ -1,4 +1,4 @@
-/* Token Radar, radar-2 theme: a dark board with one amber accent.
+/* Token Radar, radar-3 theme: a dark board with one amber accent.
    Palette: ink canvas, slate surface, amber for value, green/red for growth. */
 :root {
   --canvas: #0b0f14;
@@ -54,6 +54,10 @@ button { cursor: pointer; }
 .formula { font-family: var(--font-num); font-size: 13.5px; line-height: 1.8; color: var(--ink); margin-top: var(--s2); overflow-wrap: anywhere; }
 .formula .hl { color: var(--accent); }
 .method p { color: var(--muted); font-size: 13px; margin-top: var(--s2); max-width: 90ch; }
+.fit-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s2) var(--s4); margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--border); }
+.fit-stats div { display: flex; justify-content: space-between; gap: var(--s2); font-size: 13px; }
+.fit-stats span { color: var(--muted); }
+.fit-stats b { font-family: var(--font-num); font-weight: 600; white-space: nowrap; }
 
 .controls { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s3); padding: var(--s4) 0; }
 .field { display: grid; gap: var(--s1); }
@@ -120,6 +124,9 @@ tbody tr[data-selected="true"] { background: var(--surface-2); box-shadow: inset
 .check-line { margin-top: var(--s3); font-size: 13px; color: var(--muted); }
 .check-line b { color: var(--positive); font-weight: 600; }
 .check-line b.bad { color: var(--negative); }
+.comps { margin: var(--s2) 0 0; padding-left: var(--s5); display: grid; gap: var(--s2); }
+.comps li { padding-left: var(--s1); }
+.comps b { display: block; font-weight: 500; }
 
 @media (max-width: 900px) {
   .shell { padding: var(--s4); }

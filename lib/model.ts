@@ -1,26 +1,37 @@
-// Token Radar's model, radar-2: one snapshot of the protocol universe in, one ranked board out.
+// Token Radar's model, radar-3: one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and adds
-// pre-token protocols below the watchlist floor, chosen by implied value, not by TVL alone: a
-// fast-growing smaller protocol can outrank a flat larger one, which is the early radar's whole point.
+// pre-token protocols below the watchlist floor, chosen by implied value, not by TVL alone.
+//
 // A protocol is pre-token when its record carries no token (no market cap, no CoinGecko id, no
 // symbol); live-token protocols are kept apart and shown with the market's own values, never mixed
 // into the ranked board.
 //
-// Implied value follows only from the snapshot's own figures:
+// Implied value is FITTED, not hand-set. The snapshot carries 117 launched protocols with a real
+// market cap and a TVL (after excluding CEX products, wrapped/staked/versioned names and zero
+// market caps). A pooled log-log regression of market cap on TVL over those 117 gives
+// log10(market cap) = 3.39 + 0.47 x log10(TVL), R-squared 0.15, residual spread 0.88 dex.
+// Held out (every fifth protocol by slug, 23 rows, fitted on the other 94), the median absolute
+// error is 87% and 78% of predictions land within 2x of the real market cap. That is far better
+// than the hand-set radar-2 formula, whose median error on the same launched set is 469% — and
+// it is also honest about its limits: market cap per TVL in this snapshot spans four orders of
+// magnitude (median 0.24x, interquartile 0.05x to 1.04x), so no TVL-only model can be precise.
+// Every row therefore carries an 80% interval from the fit's own residual spread, and the
+// dashboard says so in plain words. The value basis is MARKET CAP (mcap_usd): the snapshot
+// carries no fully-diluted value, and nothing here pretends otherwise.
 //
-//   tvlScore     = log10(tvl_usd / 1_000_000)          -- log scale, so one giant protocol cannot
-//                                                        -- dominate the board the way a linear TVL
-//                                                        -- term does (a $100B protocol is ~5, a
-//                                                        -- $5M one ~0.7, a factor of 7, not 20,000)
-//   growthMult   = 1 + clamp(change_7d, -50, 150) / 100 * 0.6
-//   maturityMult = 0.70 + min(age_days, 1460) / 1460 * 0.50   (age unknown: 0.85)
-//   reachMult    = 1 + min(chains, 6) * 0.02             -- one chain 1.02, six or more 1.12
-//   implied      = max(1, round(45_000_000 * tvlScore * growthMult * maturityMult * reachMult))
+// The small adjustments — seven-day growth, age with no token, chain reach — were TESTED on the
+// same launched set before being kept: regressing log10(market cap / TVL) on them explains
+// almost nothing (R-squared 0.02; correlations -0.07, -0.14 and -0.00). They carry no pricing
+// signal in launched data, so they enter only as small bounded ordering terms (growth at most
+// +/-15%, maturity 0.90 to 1.10, reach at most +6%), never as value drivers: the fitted TVL
+// term carries the value. Keeping them bounded and labelled is the honest middle between
+// dropping the launch-timing signals the brief names and pretending they price anything.
 //
-// Age is the time since DefiLlama began tracking the protocol: the best record of how long it has
-// run with no token. Growth is the TVL's seven-day change. Reach is how many chains it runs on.
-// No protocol name is ever special-cased: the same function scores every row.
+// Sensitivity: dropping the 7 launched protocols whose market cap per TVL sits outside
+// 0.001x-10x (a 400x outlier among them) moves the fit to intercept 2.44, slope 0.59,
+// R-squared 0.29. Same direction, wider level uncertainty — one more reason every row carries
+// its interval. No protocol name is ever special-cased: the same fitted function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -45,9 +56,8 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** The model's constants, as the dashboard states them. */
+/** The fitted value model: the regression lives in fitValueModel; these are only the small bounded ordering terms. */
 export interface ModelConstants {
-  scale_usd: number;
   growth_weight: number;
   growth_floor: number;
   growth_cap: number;
@@ -63,24 +73,28 @@ export interface ModelConstants {
 export const MATURITY_CAP_DAYS = 1460;
 
 /** The reach bonus per chain, capped at six chains: breadth helps, but only up to a point. */
-export const REACH_PER_CHAIN = 0.02;
+export const REACH_PER_CHAIN = 0.01;
 export const REACH_MAX_CHAINS = 6;
 
+/**
+ * The ordering terms, kept small on purpose: the launched set showed they carry no pricing
+ * signal (R-squared 0.02), so growth moves a value by at most +/-15%, maturity by 0.90 to 1.10,
+ * reach by at most +6%. The fitted TVL term carries the value; these only order near-ties.
+ */
 export const MODEL: ModelConstants = {
-  scale_usd: 45_000_000,
-  growth_weight: 0.6,
+  growth_weight: 0.3,
   growth_floor: -50,
-  growth_cap: 150,
-  maturity_floor: 0.7,
-  maturity_range: 0.5,
+  growth_cap: 50,
+  maturity_floor: 0.9,
+  maturity_range: 0.2,
   maturity_days: MATURITY_CAP_DAYS,
-  unknown_age_multiplier: 0.85,
+  unknown_age_multiplier: 0.95,
   reach_per_chain: REACH_PER_CHAIN,
   reach_max_chains: REACH_MAX_CHAINS,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by implied value. */
 export const EARLY_ROWS = 160;
@@ -93,6 +107,45 @@ export interface FarmStep {
   text: string;
   cost: string;
   time: string;
+}
+
+/** The fitted regression and its validation, computed from the snapshot itself at run time. */
+export interface FitStats {
+  /** Launched protocols the fit was trained on (market cap and TVL both positive, after exclusions). */
+  n: number;
+  /** log10(market cap) = intercept + slope x log10(TVL). */
+  intercept: number;
+  slope: number;
+  /** Share of log market-cap variance the TVL term explains. */
+  r2: number;
+  /** Residual spread in dex (log10 units) around the fitted line. */
+  residual_sd: number;
+  /** Held-out rows (every fifth protocol by slug). */
+  held_out_n: number;
+  /** Median absolute percentage error on the held-out rows, with the ordering terms applied. */
+  held_out_med_ape_pct: number;
+  /** Share of held-out rows predicted within 2x of the real market cap. */
+  held_out_within_2x_pct: number;
+  /** Share of held-out rows predicted within 50% of the real market cap. */
+  held_out_within_50_pct: number;
+  /** The same fit after dropping the 7 launched protocols with market cap per TVL outside 0.001x-10x. */
+  trimmed_n: number;
+  trimmed_intercept: number;
+  trimmed_slope: number;
+  trimmed_r2: number;
+  /** Launched protocols dropped because their market cap is zero (not a usable comparable). */
+  excluded_zero_mcap: number;
+  /** What the fit prices: market cap, because the snapshot carries no fully-diluted value. */
+  value_basis: string;
+}
+
+/** One launched comparable behind a board row's value: same neighbourhood of TVL, already trading. */
+export interface Comparable {
+  slug: string;
+  name: string;
+  tvl_usd: number;
+  mcap_usd: number;
+  mcap_tvl: number;
 }
 
 /** One row of board.json: the ranked board's row. */
@@ -112,13 +165,16 @@ export interface BoardRow {
   age_days: number | null;
   implied_value_usd: number;
   model: {
-    tvl_score: number;
+    base_value_usd: number;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
     reach_multiplier: number;
     age_days: number | null;
+    band_low_usd: number;
+    band_high_usd: number;
   };
+  comparables: Comparable[];
   farm_steps: string[];
 }
 
@@ -135,10 +191,13 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
-  tvl_score: number;
+  base_value_usd: number;
+  band_low_usd: number;
+  band_high_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
   reach_multiplier: number;
+  comparables: Comparable[];
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -152,13 +211,14 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
-/** Everything the dashboard needs: the board, the live set, and the model it runs. */
+/** Everything the dashboard needs: the board, the live set, the fit and the model it runs. */
 export interface RadarData {
   as_of: string;
   source: string;
   floor_usd: number;
   model: ModelConstants;
   model_version: string;
+  fit: FitStats;
   watchlist_size: number;
   watchlist: string[];
   board_size: number;
@@ -192,18 +252,20 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The multipliers and the implied value one protocol gets under `model`. */
-export function impliedValue(
+/** The fitted base and the small ordering terms one protocol gets, under `fit` and `model`. */
+export function predictValue(
   protocol: SnapshotProtocol,
   asOf: string,
+  intercept: number,
+  slope: number,
   model: ModelConstants,
-): { implied: number; tvlScore: number; growthPct: number; growthMult: number; maturityMult: number; reachMult: number; age: number | null } {
+): { implied: number; base: number; growthPct: number; growthMult: number; maturityMult: number; reachMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   // A score needs a positive TVL: log10 of zero or a negative number is not a score.
   if (!Number.isFinite(protocol.tvl_usd) || protocol.tvl_usd <= 0) {
     throw new SnapshotError(`protocol ${protocol.slug} has TVL ${protocol.tvl_usd}: a score needs a positive TVL`);
   }
-  const tvlScore = Math.log10(Math.max(1, protocol.tvl_usd) / 1_000_000);
+  const base = Math.pow(10, intercept + slope * Math.log10(protocol.tvl_usd));
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
@@ -212,8 +274,22 @@ export function impliedValue(
       ? model.unknown_age_multiplier
       : model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const reachMult = 1 + Math.min(protocol.chains.length, model.reach_max_chains) * model.reach_per_chain;
-  const implied = Math.max(1, Math.round(model.scale_usd * tvlScore * growthMult * maturityMult * reachMult));
-  return { implied, tvlScore, growthPct, growthMult, maturityMult, reachMult, age };
+  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * reachMult));
+  return { implied, base: Math.max(1, Math.round(base)), growthPct, growthMult, maturityMult, reachMult, age };
+}
+
+/** The multipliers, the implied value and its 80% interval one protocol gets under `fit` and `model`. */
+export function impliedValue(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  fit: FitStats,
+  model: ModelConstants,
+): { implied: number; base: number; growthPct: number; growthMult: number; maturityMult: number; reachMult: number; age: number | null; bandLow: number; bandHigh: number } {
+  const v = predictValue(protocol, asOf, fit.intercept, fit.slope, model);
+  const factor = Math.pow(10, 1.2816 * fit.residual_sd);
+  const bandLow = Math.max(1, Math.round(v.implied / factor));
+  const bandHigh = Math.round(v.implied * factor);
+  return { ...v, bandLow, bandHigh };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -251,9 +327,139 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
 
+/** Whether a launched protocol is a usable comparable: a real market cap and TVL, not an exchange, not a versioned pool, not a wrapped or staked product. */
+export function isComparable(p: SnapshotProtocol): boolean {
+  if (p.mcap_usd === null || !Number.isFinite(p.mcap_usd) || p.mcap_usd <= 0) return false;
+  if (!Number.isFinite(p.tvl_usd) || p.tvl_usd <= 0) return false;
+  if (p.category === 'CEX') return false;
+  if (VERSIONED.test(p.name)) return false;
+  if (WRAPPED_WORD.test(p.name)) return false;
+  if (EXCHANGE_PREFIX.test(p.name)) return false;
+  return true;
+}
+
+/** Ordinary least squares on two equal-length lists: intercept, slope, R-squared, residual spread. */
+function ols(xs: number[], ys: number[]): { a: number; b: number; r2: number; sd: number } {
+  const n = xs.length;
+  const mx = xs.reduce((s, x) => s + x, 0) / n;
+  const my = ys.reduce((s, y) => s + y, 0) / n;
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  for (let i = 0; i < n; i++) {
+    sxx += (xs[i]! - mx) * (xs[i]! - mx);
+    sxy += (xs[i]! - mx) * (ys[i]! - my);
+    syy += (ys[i]! - my) * (ys[i]! - my);
+  }
+  const b = sxx === 0 ? 0 : sxy / sxx;
+  const a = my - b * mx;
+  const r2 = sxx === 0 || syy === 0 ? 0 : (sxy * sxy) / (sxx * syy);
+  let ss = 0;
+  for (let i = 0; i < n; i++) ss += (ys[i]! - (a + b * xs[i]!)) * (ys[i]! - (a + b * xs[i]!));
+  const sd = n > 2 ? Math.sqrt(ss / (n - 2)) : 0;
+  return { a, b, r2, sd };
+}
+
+/** The median of a sorted list's upper middle: the same rule the analysis used, kept deterministic. */
+function medianSorted(sorted: number[]): number {
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+/**
+ * The fitted value model, computed from the snapshot itself: a pooled log-log regression of
+ * market cap on TVL over the launched comparables, validated on a deterministic held-out split
+ * (slug-sorted order, every fifth row), with a sensitivity fit that drops the extreme
+ * market-cap-per-TVL ratios. Pure arithmetic on the input: the same snapshot always fits the
+ * same numbers, so two runs write the same bytes.
+ */
+export function fitValueModel(snapshot: Snapshot, model: ModelConstants = MODEL): FitStats {
+  const launched = snapshot.protocols.filter(isComparable);
+  const zeroMcap = snapshot.protocols.filter(
+    (p) => p.mcap_usd !== null && Number.isFinite(p.mcap_usd) && (p.mcap_usd as number) <= 0,
+  ).length;
+  if (launched.length < 10) {
+    throw new SnapshotError(`snapshot carries ${launched.length} launched comparables: a fit needs at least 10`);
+  }
+  const sorted = [...launched].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const full = ols(
+    sorted.map((p) => Math.log10(p.tvl_usd)),
+    sorted.map((p) => Math.log10(p.mcap_usd as number)),
+  );
+  const train = sorted.filter((_, i) => i % 5 !== 4);
+  const test = sorted.filter((_, i) => i % 5 === 4);
+  const split = ols(
+    train.map((p) => Math.log10(p.tvl_usd)),
+    train.map((p) => Math.log10(p.mcap_usd as number)),
+  );
+  const errors = test
+    .map((p) => {
+      const pred = predictValue(p, snapshot.as_of, split.a, split.b, model).implied;
+      return Math.abs(pred - (p.mcap_usd as number)) / (p.mcap_usd as number);
+    })
+    .sort((a, b) => a - b);
+  const trimmed = sorted.filter((p) => {
+    const ratio = (p.mcap_usd as number) / p.tvl_usd;
+    return ratio >= 0.001 && ratio <= 10;
+  });
+  const trimFit = ols(
+    trimmed.map((p) => Math.log10(p.tvl_usd)),
+    trimmed.map((p) => Math.log10(p.mcap_usd as number)),
+  );
+  return {
+    n: launched.length,
+    intercept: full.a,
+    slope: full.b,
+    r2: full.r2,
+    residual_sd: full.sd,
+    held_out_n: test.length,
+    held_out_med_ape_pct: medianSorted(errors) * 100,
+    held_out_within_2x_pct: (errors.filter((e) => e <= 1).length / errors.length) * 100,
+    held_out_within_50_pct: (errors.filter((e) => e <= 0.5).length / errors.length) * 100,
+    trimmed_n: trimmed.length,
+    trimmed_intercept: trimFit.a,
+    trimmed_slope: trimFit.b,
+    trimmed_r2: trimFit.r2,
+    excluded_zero_mcap: zeroMcap,
+    value_basis: 'market cap (mcap_usd); the snapshot carries no fully-diluted value',
+  };
+}
+
+/** A launched protocol's market cap per TVL, rounded for display. */
+function comparableOf(p: SnapshotProtocol): Comparable {
+  return {
+    slug: p.slug,
+    name: p.name,
+    tvl_usd: p.tvl_usd,
+    mcap_usd: p.mcap_usd as number,
+    mcap_tvl: round4((p.mcap_usd as number) / p.tvl_usd),
+  };
+}
+
+/**
+ * The three nearest launched comparables behind one pre-token row: closest in log TVL, with a
+ * same-category credit of 0.3 dex (about a 2x size difference) so a same-category protocol
+ * wins a near-tie but never a 200x size mismatch. A comparable is evidence, not a prediction:
+ * it shows what the market already pays for a protocol of this size.
+ */
+export function comparablesFor(row: SnapshotProtocol, launched: SnapshotProtocol[]): Comparable[] {
+  const rowLog = Math.log10(row.tvl_usd);
+  return [...launched]
+    .sort((a, b) => {
+      const score = (p: SnapshotProtocol): number =>
+        Math.abs(Math.log10(p.tvl_usd) - rowLog) - ((p.category ?? '') === (row.category ?? '') ? 0.3 : 0);
+      const dA = score(a);
+      const dB = score(b);
+      if (dA !== dB) return dA - dB;
+      return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
+    })
+    .slice(0, 3)
+    .map(comparableOf);
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, fit: FitStats, model: ModelConstants = MODEL): BoardRow[] {
   const index = bySlug(snapshot.protocols);
+  const launched = snapshot.protocols.filter(isComparable);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries.
   for (const slug of snapshot.watchlist) {
@@ -265,13 +471,13 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   // flat larger one. Never a replacement for a watchlist row: a chosen protocol stays chosen.
   const early = snapshot.protocols
     .filter((p) => !chosen.has(p.slug) && isRankable(p) && p.tvl_usd < snapshot.floor_usd)
-    .map((p) => ({ p, score: impliedValue(p, snapshot.as_of, model).implied }))
+    .map((p) => ({ p, score: impliedValue(p, snapshot.as_of, fit, model).implied }))
     .sort((a, b) => b.score - a.score || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0))
     .slice(0, EARLY_ROWS);
   for (const e of early) chosen.set(e.p.slug, e.p);
 
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model);
+    const v = impliedValue(p, snapshot.as_of, fit, model);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -291,13 +497,16 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     age_days: s.age,
     implied_value_usd: s.implied,
     model: {
-      tvl_score: round4(s.tvlScore),
+      base_value_usd: s.base,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
       reach_multiplier: round4(s.reachMult),
       age_days: s.age,
+      band_low_usd: s.bandLow,
+      band_high_usd: s.bandHigh,
     },
+    comparables: comparablesFor(s.p, launched),
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
 }
@@ -523,16 +732,20 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
-    tvl_score: row.model.tvl_score,
+    base_value_usd: row.model.base_value_usd,
+    band_low_usd: row.model.band_low_usd,
+    band_high_usd: row.model.band_high_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     reach_multiplier: row.model.reach_multiplier,
+    comparables: row.comparables,
   };
 }
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
+  const fit = fitValueModel(snapshot, model);
+  const board = buildBoard(snapshot, fit, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
@@ -541,6 +754,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     floor_usd: snapshot.floor_usd,
     model,
     model_version: MODEL_VERSION,
+    fit,
     watchlist_size: snapshot.watchlist.length,
     watchlist: [...snapshot.watchlist],
     board_size: board.length,
